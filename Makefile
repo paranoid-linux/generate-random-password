@@ -27,19 +27,26 @@ path_append = $(strip $(1))$(strip $(__PATH_SEPARATOR__))$(strip $(2))
 #    Make variables to satisfy conventions
 #
 NAME = generate-random-password
-VERSION = 0.0.1
+VERSION = 0.0.2
 PKG_NAME = $(NAME)-$(VERSION)
 
 
 #
 #    Make variables that readers &/or maintainers may wish to modify
 #
-INSTALL_DIRECTORY := $(HOME)/bin
 SCRIPT_NAME := generate-random-password
 MAN_PATH := $(firstword $(subst :, ,$(shell manpath)))
 MAN_DIR_NAME := man1
 GIT_BRANCH := main
 GIT_REMOTE := origin
+
+ifeq '$(shell id -u)' '0'
+	INSTALL_DIRECTORY := /usr/local/sbin
+	COMPLETION_DIR := $(shell pkg-config --variable=completionsdir bash-completion)
+else
+	COMPLETION_DIR := $(shell echo "$${BASH_COMPLETION_USER_DIR:-$${HOME}/.local/share/bash-completion}")
+	INSTALL_DIRECTORY := $(HOME)/bin
+endif
 
 
 #
@@ -95,18 +102,17 @@ GIT_MODULES_PATH := $(call path_append, $(ROOT_DIRECTORY_PATH), .gitmodules)
 #
 #    Make targets and settings
 #
-.ONESHELL: install
+.ONESHELL: install uninstall
 
-.PHONY: clean
-.SILENT: clean
+.PHONY: clean config install uninstall upgrade git-pull link-script unlink-script man link-manual unlink-manual link-completion unlink-completion list
+.SILENT: clean config install uninstall upgrade git-pull link-script unlink-script man link-manual unlink-manual link-completion unlink-completion list
+
 clean: SHELL := /bin/bash
 clean: ## Removes configuration file
 	[[ -f "$(CONFIG_PATH)" ]] && {
 		rm -v "$(CONFIG_PATH)"
 	}
 
-.PHONY: config
-.SILENT: config
 config: SHELL := /bin/bash
 config: ## Writes configuration file
 	tee "$(CONFIG_PATH)" 1>/dev/null <<EOF
@@ -118,35 +124,27 @@ config: ## Writes configuration file
 	MAN_DIR_NAME = $(MAN_DIR_NAME)
 	GIT_BRANCH = $(GIT_BRANCH)
 	GIT_REMOTE = $(GIT_REMOTE)
+	COMPLETION_DIR = $(COMPLETION_DIR)
 	EOF
 
-.PHONY: install
-.SILENT: install
-install: ## Runs targets -> link-script link-manual
-install: | link-script link-manual
+install: ## Runs targets -> link-script link-manual link-completion
+install: | link-script link-manual link-completion
 
-.PHONY: uninstall
-.SILENT: uninstall
-uninstall: ## Runs targets -> unlink-script unlink-manual
-uninstall: | unlink-script unlink-manual
+uninstall: ## Runs targets -> unlink-script unlink-manual unlink-completion
+uninstall: | unlink-script unlink-manual unlink-completion
 
-.PHONY: upgrade
-.SILENT: upgrade
 upgrade: ## Runs targets -> uninstall git-pull install
 upgrade: | uninstall git-pull install
 
-.PHONY: git-pull
-.SILENT: git-pull
 git-pull: SHELL := /bin/bash
 git-pull: ## Pulls updates from default upstream Git remote
-	cd "$(ROOT_DIRECTORY_PATH)"
+	pushd "$(ROOT_DIRECTORY_PATH)"
 	git pull $(GIT_REMOTE) $(GIT_BRANCH)
 	[[ -f "$(GIT_MODULES_PATH)" ]] && {
 		git submodule update --init --merge --recursive
 	}
+	popd
 
-.PHONY: link-script
-.SILENT: link-script
 link-script: SHELL := /bin/bash
 link-script: ## Symbolically links to project script
 	if [[ -L "$(SCRIPT__INSTALL_PATH)" ]]; then
@@ -157,8 +155,6 @@ link-script: ## Symbolically links to project script
 		ln -sv "$(SCRIPT__SOURCE_PATH)" "$(SCRIPT__INSTALL_PATH)"
 	fi
 
-.PHONY: unlink-script
-.SILENT: unlink-script
 unlink-script: SHELL := /bin/bash
 unlink-script: ## Removes symbolic links to project script
 	if [[ -L "$(SCRIPT__INSTALL_PATH)" ]]; then
@@ -169,16 +165,12 @@ unlink-script: ## Removes symbolic links to project script
 		printf >&2 'No link to remove at -> %s\n' "$(SCRIPT__INSTALL_PATH)"
 	fi
 
-.PHONY: man
-.SILENT: man
 man: SHELL := /bin/bash
 man: ## Builds manual pages via `help2man` command
 	if [[ -d "$(MAN__SOURCE_DIR)" ]]; then
 		help2man "$(SCRIPT__SOURCE_PATH)" --output="$(call path_append, $(MAN__SOURCE_DIR), $(NAME)).1" --no-info
 	fi
 
-.PHONY: link-manual
-.SILENT: link-manual
 link-manual: SHELL := /bin/bash
 link-manual: ## Symbolically links project manual page(s)
 	if ! [[ -d "$(MAN__SOURCE_DIR)" ]]; then
@@ -193,8 +185,6 @@ link-manual: ## Symbolically links project manual page(s)
 		fi
 	done < <(ls "$(MAN__SOURCE_DIR)")
 
-.PHONY: unlink-manual
-.SILENT: unlink-manual
 unlink-manual: SHELL := /bin/bash
 unlink-manual: ## Removes symbolic links to project manual page(s)
 	if ! [[ -d "$(MAN__SOURCE_DIR)" ]]; then
@@ -209,8 +199,34 @@ unlink-manual: ## Removes symbolic links to project manual page(s)
 		fi
 	done < <(ls "$(MAN__SOURCE_DIR)")
 
-.PHONY: list
-.SILENT: list
+link-completion: SHELL := /bin/bash
+link-completion: ## Links tab completion  Bash configuration file for help-to-complete
+	if ! [[ -d "$(COMPLETION_DIR)" ]]; then
+		printf >&2 'No completion directory found at -> %s\n' "$(COMPLETION_DIR)"
+		exit 1
+	fi
+	while read -r _completion; do
+		if [[ -L "$(MAN__INSTALL_DIR)$(__PATH_SEPARATOR__)$${_page}" ]]; then
+			printf >&2 'Link already exists -> %s\n' "$(COMPLETION_DIR)$(__PATH_SEPARATOR__)$${_completion}"
+		else
+			ln -sv "$(ROOT_DIRECTORY_PATH)/bash-completion/$${_completion}" "$(COMPLETION_DIR)$(__PATH_SEPARATOR__)$${_completion}"
+		fi
+	done < <(ls "$(ROOT_DIRECTORY_PATH)/bash-completion")
+
+unlink-completion: SHELL := /bin/bash
+unlink-completion: ## Removes project symbolic link(s) for Bash tab completion
+	if ! [[ -d "$(COMPLETION_DIR)" ]]; then
+		printf >&2 'No completion directory found at -> %s\n' "$(COMPLETION_DIR)"
+		exit 1
+	fi
+	while read -r _completion; do
+		if [[ -L "$(MAN__INSTALL_DIR)$(__PATH_SEPARATOR__)$${_page}" ]]; then
+			rm "$(COMPLETION_DIR)$(__PATH_SEPARATOR__)$${_completion}"
+		else
+			printf >&2 'No link found at -> %s\n' "$(COMPLETION_DIR)$(__PATH_SEPARATOR__)$${_completion}"
+		fi
+	done < <(ls "$(ROOT_DIRECTORY_PATH)/bash-completion")
+
 list: SHELL := /bin/bash
 list: ## Lists available make commands
 	gawk 'BEGIN {
